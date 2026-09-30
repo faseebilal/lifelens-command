@@ -1,6 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { isSupabaseConfigured } from './client';
+import { isSupabaseConfigured, getSupabaseUrl, getSupabaseAnonKey } from './client';
 
 /**
  * Middleware session updater for Supabase Auth in Next.js App Router
@@ -15,8 +15,8 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!.trim();
-  const rawAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!.trim();
+  const rawUrl = getSupabaseUrl();
+  const rawAnonKey = getSupabaseAnonKey();
 
   const supabase = createServerClient(rawUrl, rawAnonKey, {
     cookies: {

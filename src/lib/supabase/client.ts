@@ -1,18 +1,29 @@
 import { createBrowserClient } from '@supabase/ssr';
 import { createClient as createJsClient, SupabaseClient } from '@supabase/supabase-js';
 
-const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const rawAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+export const getSupabaseUrl = (): string => {
+  return (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+};
+
+export const getSupabaseAnonKey = (): string => {
+  return (
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ''
+  ).trim();
+};
 
 /**
  * Validates whether real, production-ready Supabase credentials are configured.
  * Rejects default placeholders like 'your-project.supabase.co' or 'demo-anon-key'.
  */
 export const isSupabaseConfigured = (): boolean => {
-  if (!rawUrl || !rawAnonKey) return false;
+  const url = getSupabaseUrl();
+  const key = getSupabaseAnonKey();
+  if (!url || !key) return false;
 
-  const urlLower = rawUrl.toLowerCase().trim();
-  const keyLower = rawAnonKey.toLowerCase().trim();
+  const urlLower = url.toLowerCase();
+  const keyLower = key.toLowerCase();
 
   // Check for placeholder patterns
   if (
@@ -27,9 +38,10 @@ export const isSupabaseConfigured = (): boolean => {
 
   if (
     keyLower.includes('your-anon-key') ||
+    keyLower.includes('your-publishable-key') ||
     keyLower.includes('demo-anon-key') ||
     keyLower.includes('placeholder') ||
-    keyLower.length < 30
+    keyLower.length < 20
   ) {
     return false;
   }
@@ -39,9 +51,10 @@ export const isSupabaseConfigured = (): boolean => {
 
 // Return host without exposing secrets
 export function getSupabaseHost(): string {
-  if (!rawUrl) return 'Not configured';
+  const url = getSupabaseUrl();
+  if (!url) return 'Not configured';
   try {
-    const parsed = new URL(rawUrl);
+    const parsed = new URL(url);
     return parsed.hostname;
   } catch {
     return 'Invalid URL';
@@ -49,8 +62,8 @@ export function getSupabaseHost(): string {
 }
 
 // Safe fallback URL and Key for client initialization without triggering network errors
-const safeUrl = isSupabaseConfigured() ? rawUrl.trim() : 'https://placeholder.supabase.co';
-const safeAnonKey = isSupabaseConfigured() ? rawAnonKey.trim() : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder';
+const safeUrl = isSupabaseConfigured() ? getSupabaseUrl() : 'https://placeholder.supabase.co';
+const safeAnonKey = isSupabaseConfigured() ? getSupabaseAnonKey() : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder';
 
 /**
  * Modern Supabase Client using @supabase/ssr createBrowserClient for browser environment

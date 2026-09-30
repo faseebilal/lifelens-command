@@ -3,7 +3,7 @@
 // Provides safe, zero-leak telemetry for diagnosing mobile browser auth issues
 // ============================================================================
 
-import { isSupabaseConfigured, getSupabaseHost } from '@/lib/supabase/client';
+import { isSupabaseConfigured, getSupabaseHost, getSupabaseUrl, getSupabaseAnonKey } from '@/lib/supabase/client';
 
 export interface DiagnosticLog {
   id: string;
@@ -217,7 +217,7 @@ export async function testSupabaseConnectivity(): Promise<{
     };
   }
 
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const rawUrl = getSupabaseUrl();
   const startTime = Date.now();
 
   try {
@@ -233,7 +233,7 @@ export async function testSupabaseConnectivity(): Promise<{
       method: 'GET',
       signal: controller.signal,
       headers: {
-        apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+        apikey: getSupabaseAnonKey(),
       },
     });
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
-import { isSupabaseConfigured } from '@/lib/supabase/client';
+import { isSupabaseConfigured, getSupabaseUrl, getSupabaseAnonKey } from '@/lib/supabase/client';
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
@@ -8,8 +8,8 @@ export async function GET(request: NextRequest) {
   const next = requestUrl.searchParams.get('next') || '/dashboard';
 
   if (code && isSupabaseConfigured()) {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+    const supabaseUrl = getSupabaseUrl();
+    const supabaseAnonKey = getSupabaseAnonKey();
 
     const response = NextResponse.redirect(new URL(next, request.url));
 

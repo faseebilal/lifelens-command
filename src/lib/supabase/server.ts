@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
-import { isSupabaseConfigured } from './client';
+import { isSupabaseConfigured, getSupabaseUrl, getSupabaseAnonKey } from './client';
 
 /**
  * Modern Supabase Server Client for Server Components, Server Actions, and Route Handlers
@@ -9,10 +9,10 @@ import { isSupabaseConfigured } from './client';
 export async function createClient() {
   const cookieStore = cookies();
   const rawUrl = isSupabaseConfigured()
-    ? process.env.NEXT_PUBLIC_SUPABASE_URL!.trim()
+    ? getSupabaseUrl()
     : 'https://placeholder.supabase.co';
   const rawAnonKey = isSupabaseConfigured()
-    ? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!.trim()
+    ? getSupabaseAnonKey()
     : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder';
 
   return createServerClient(rawUrl, rawAnonKey, {
