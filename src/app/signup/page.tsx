@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ShieldAlert, ArrowRight, Lock, Mail, User, CheckCircle2, Zap } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
+import { AuthDiagnosticModal } from '@/components/auth/AuthDiagnosticModal';
 
 export default function SignupPage() {
   const router = useRouter();
@@ -186,6 +187,8 @@ export default function SignupPage() {
             Login here
           </Link>
         </div>
+
+        <AuthDiagnosticModal />
       </div>
     </div>
   );

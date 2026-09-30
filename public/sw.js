@@ -1,13 +1,34 @@
 // ============================================================================
 // LifeLens Command — Production Web Push Service Worker
+// NOTE: This Service Worker handles Web Push Notifications ONLY.
+// It explicitly DOES NOT intercept or block any network fetch requests.
 // ============================================================================
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
+// Purge any stale cache storage from earlier builds on activate
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) => {
+        return Promise.all(keys.map((k) => caches.delete(k)));
+      })
+      .then(() => self.clients.claim())
+  );
+});
+
+// Listen for message events (e.g. diagnostics or explicit unregister requests)
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'UNREGISTER') {
+    self.registration.unregister().then(() => {
+      self.clients.matchAll().then((clients) => {
+        clients.forEach((client) => client.navigate(client.url));
+      });
+    });
+  }
 });
 
 // Listen for incoming Web Push events from VAPID server

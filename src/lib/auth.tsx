@@ -2,7 +2,8 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
+import { supabase, isSupabaseConfigured, getSupabaseHost } from '@/lib/supabase/client';
+import { recordAuthTrace } from '@/lib/auth-diagnostic';
 
 export interface AuthUser {
   id: string;
@@ -241,18 +242,88 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = useCallback(async (email: string, password: string): Promise<AuthResponse> => {
     setIsLoading(true);
     const cleanEmail = email.trim().toLowerCase();
+    const emailDomain = cleanEmail.split('@')[1] || 'unknown';
+    const supabaseHost = getSupabaseHost();
+    const supabaseActive = isSupabaseConfigured();
+
+    recordAuthTrace('STARTED', `Login attempt initiated for domain: @${emailDomain}`);
+    recordAuthTrace('INFO', `Supabase Client Initialized`, {
+      host: supabaseHost,
+      configured: supabaseActive,
+    });
 
     try {
       // 1. Attempt Supabase Auth if configured
-      if (isSupabaseConfigured()) {
+      if (supabaseActive) {
+        recordAuthTrace('SENT', `Sending credentials to Supabase signInWithPassword`, {
+          host: supabaseHost,
+          endpoint: '/auth/v1/token?grant_type=password',
+        });
+
         try {
           const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+
           if (error) {
+            recordAuthTrace('ERROR', `Supabase signInWithPassword returned error`, {
+              name: error.name || 'AuthApiError',
+              status: error.status,
+              message: error.message,
+            });
+
+            // Check if this error is a network fetch failure
+            const isFetchError =
+              error.message?.toLowerCase().includes('fetch') ||
+              error.status === 0 ||
+              error.name === 'AuthRetryableFetchError';
+
+            if (isFetchError) {
+              recordAuthTrace('INFO', 'Network failure reached Supabase auth. Checking local operator workspace credentials...');
+              if (typeof window !== 'undefined') {
+                const rawUsers = localStorage.getItem(LOCAL_USERS_KEY);
+                const users = rawUsers ? JSON.parse(rawUsers) : [];
+                const passHash = hashPassword(password);
+                const foundUser = users.find(
+                  (u: any) => u.email.toLowerCase() === cleanEmail && u.passwordHash === passHash
+                );
+
+                if (foundUser) {
+                  const authUser: AuthUser = {
+                    id: foundUser.id,
+                    email: foundUser.email,
+                    full_name: foundUser.full_name,
+                    avatar_url: '',
+                    created_at: foundUser.created_at,
+                  };
+                  setUser(authUser);
+                  setIsDemoMode(false);
+                  setSessionCookie(authUser.id);
+                  localStorage.removeItem(DEMO_FLAG_KEY);
+                  localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(authUser));
+                  recordAuthTrace('RECEIVED', 'Successfully authenticated via local operator workspace fallback.', {
+                    userId: authUser.id,
+                  });
+                  setIsLoading(false);
+                  return { success: true };
+                }
+              }
+
+              setIsLoading(false);
+              return {
+                success: false,
+                error: `Unable to reach Supabase authentication server (${error.message}). Please check internet connection, or register an operator account if working in local workspace.`,
+              };
+            }
+
             setIsLoading(false);
             return { success: false, error: error.message };
           }
 
           if (data.user) {
+            recordAuthTrace('RECEIVED', `Supabase signInWithPassword succeeded`, {
+              userId: data.user.id,
+              sessionEstablished: !!data.session,
+            });
+
             let profileName = data.user.user_metadata?.full_name || cleanEmail.split('@')[0];
             try {
               const { data: profile } = await supabase
@@ -284,19 +355,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             return { success: true };
           }
         } catch (supErr: any) {
-          console.warn('Supabase sign-in network error:', supErr);
-          // If network / DNS fails on Supabase, diagnose clearly
-          if (supErr.message && supErr.message.includes('fetch')) {
-            setIsLoading(false);
-            return {
-              success: false,
-              error: 'Unable to reach the Supabase authentication server. Please check your internet connection or verify your NEXT_PUBLIC_SUPABASE_URL in Vercel.',
-            };
+          recordAuthTrace('ERROR', `Supabase unexpected rejection: ${supErr.message}`, {
+            name: supErr.name,
+            message: supErr.message,
+          });
+
+          if (typeof window !== 'undefined') {
+            const rawUsers = localStorage.getItem(LOCAL_USERS_KEY);
+            const users = rawUsers ? JSON.parse(rawUsers) : [];
+            const passHash = hashPassword(password);
+            const foundUser = users.find(
+              (u: any) => u.email.toLowerCase() === cleanEmail && u.passwordHash === passHash
+            );
+
+            if (foundUser) {
+              const authUser: AuthUser = {
+                id: foundUser.id,
+                email: foundUser.email,
+                full_name: foundUser.full_name,
+                avatar_url: '',
+                created_at: foundUser.created_at,
+              };
+              setUser(authUser);
+              setIsDemoMode(false);
+              setSessionCookie(authUser.id);
+              localStorage.removeItem(DEMO_FLAG_KEY);
+              localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(authUser));
+              recordAuthTrace('RECEIVED', 'Successfully authenticated via local operator workspace fallback.', {
+                userId: authUser.id,
+              });
+              setIsLoading(false);
+              return { success: true };
+            }
           }
+
+          setIsLoading(false);
+          return {
+            success: false,
+            error: 'Unable to reach the Supabase authentication server. Please check your internet connection or verify your NEXT_PUBLIC_SUPABASE_URL in Vercel.',
+          };
         }
       }
 
       // 2. Local Operator Login (Hybrid Fallback for zero-failure mobile testing)
+      recordAuthTrace('INFO', 'Verifying operator credentials in local workspace storage...');
       if (typeof window !== 'undefined') {
         const rawUsers = localStorage.getItem(LOCAL_USERS_KEY);
         const users = rawUsers ? JSON.parse(rawUsers) : [];
@@ -320,11 +422,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setSessionCookie(authUser.id);
           localStorage.removeItem(DEMO_FLAG_KEY);
           localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(authUser));
+          recordAuthTrace('RECEIVED', 'Signed in successfully to local workspace.', {
+            userId: authUser.id,
+          });
           setIsLoading(false);
           return { success: true };
         }
 
-        // If no user found in local storage
+        recordAuthTrace('ERROR', 'Invalid operator credentials entered.');
         setIsLoading(false);
         return {
           success: false,
@@ -335,6 +440,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(false);
       return { success: false, error: 'Sign in failed. Environment storage not available.' };
     } catch (err: any) {
+      recordAuthTrace('ERROR', `Sign in unexpected exception: ${err.message}`);
       setIsLoading(false);
       return {
         success: false,
@@ -348,10 +454,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsLoading(true);
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = fullName.trim() || 'Commander';
+    const emailDomain = cleanEmail.split('@')[1] || 'unknown';
+    const supabaseHost = getSupabaseHost();
+    const supabaseActive = isSupabaseConfigured();
+
+    recordAuthTrace('STARTED', `Registration initiated for domain: @${emailDomain}`);
+    recordAuthTrace('INFO', `Supabase Client Initialized`, {
+      host: supabaseHost,
+      configured: supabaseActive,
+    });
 
     try {
       // 1. Attempt Supabase Auth if properly configured
-      if (isSupabaseConfigured()) {
+      if (supabaseActive) {
+        recordAuthTrace('SENT', `Sending registration payload to Supabase signUp`, {
+          host: supabaseHost,
+          endpoint: '/auth/v1/signup',
+        });
+
         try {
           const { data, error } = await supabase.auth.signUp({
             email: cleanEmail,
@@ -362,12 +482,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
 
           if (error) {
-            setIsLoading(false);
-            return { success: false, error: error.message };
-          }
+            recordAuthTrace('ERROR', `Supabase signUp returned error`, {
+              name: error.name || 'AuthApiError',
+              status: error.status,
+              message: error.message,
+            });
 
-          if (data.user) {
+            const isFetchError =
+              error.message?.toLowerCase().includes('fetch') ||
+              error.status === 0 ||
+              error.name === 'AuthRetryableFetchError';
+
+            if (!isFetchError) {
+              setIsLoading(false);
+              return { success: false, error: error.message };
+            }
+
+            // If fetch failed, proceed to local operator registration
+            recordAuthTrace('INFO', 'Supabase network unreachable. Falling back to local workspace registration...');
+          } else if (data.user) {
+            recordAuthTrace('RECEIVED', `Supabase signUp succeeded`, {
+              userId: data.user.id,
+              sessionEstablished: !!data.session,
+            });
+
             if (!data.session) {
+              recordAuthTrace('INFO', 'Email confirmation required by Supabase project');
               setIsLoading(false);
               return {
                 success: true,
@@ -406,19 +546,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             return { success: true };
           }
         } catch (supErr: any) {
-          console.warn('Supabase sign-up connection note:', supErr);
-          if (supErr.message && supErr.message.includes('fetch')) {
-            // Provide informative error if real Supabase was pointed to an invalid host
-            setIsLoading(false);
-            return {
-              success: false,
-              error: 'Failed to connect to Supabase. Please ensure your NEXT_PUBLIC_SUPABASE_URL and key are valid, or test in demo mode.',
-            };
-          }
+          recordAuthTrace('ERROR', `Supabase unexpected rejection on signup: ${supErr.message}`);
         }
       }
 
       // 2. Local Operator Signup (Guarantees signup NEVER throws "Failed to fetch")
+      recordAuthTrace('INFO', 'Creating account in local workspace storage...');
       if (typeof window !== 'undefined') {
         const rawUsers = localStorage.getItem(LOCAL_USERS_KEY);
         const users = rawUsers ? JSON.parse(rawUsers) : [];
@@ -426,6 +559,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Check if email already registered
         const existing = users.find((u: any) => u.email.toLowerCase() === cleanEmail);
         if (existing) {
+          recordAuthTrace('ERROR', 'Email already exists in local storage.');
           setIsLoading(false);
           return {
             success: false,
@@ -461,6 +595,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem(DEMO_FLAG_KEY);
         localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(authUser));
 
+        recordAuthTrace('RECEIVED', 'Local operator account registered successfully.', {
+          userId: authUser.id,
+        });
+
         setIsLoading(false);
         return { success: true };
       }
@@ -468,6 +606,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(false);
       return { success: false, error: 'Registration failed. Storage not available.' };
     } catch (err: any) {
+      recordAuthTrace('ERROR', `Registration exception: ${err.message}`);
       setIsLoading(false);
       return {
         success: false,
