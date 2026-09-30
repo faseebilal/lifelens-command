@@ -28,7 +28,7 @@ import {
 import { isSupabaseConfigured, getSupabaseHost } from '@/lib/supabase/client';
 
 export const AuthDiagnosticModal: React.FC = () => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [swDiag, setSwDiag] = useState<ServiceWorkerDiagnostic | null>(null);
   const [isUnregistering, setIsUnregistering] = useState(false);

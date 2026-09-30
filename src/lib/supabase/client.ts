@@ -58,15 +58,7 @@ const safeAnonKey = isSupabaseConfigured() ? rawAnonKey.trim() : 'eyJhbGciOiJIUz
  */
 export const supabase: SupabaseClient =
   typeof window !== 'undefined'
-    ? createBrowserClient(safeUrl, safeAnonKey, {
-        cookieOptions: {
-          name: 'sb-auth-token',
-          lifetime: 60 * 60 * 24 * 30, // 30 days
-          domain: '',
-          path: '/',
-          sameSite: 'lax',
-        },
-      })
+    ? createBrowserClient(safeUrl, safeAnonKey)
     : createJsClient(safeUrl, safeAnonKey, {
         auth: {
           persistSession: false,
