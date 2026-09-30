@@ -65,7 +65,7 @@ export const NodeDetailDrawer: React.FC<NodeDetailDrawerProps> = ({ taskId, onCl
   };
 
   return (
-    <div className="w-80 md:w-96 flex-shrink-0 bg-slate-900/95 backdrop-blur-xl border-l border-white/10 flex flex-col h-full overflow-y-auto p-5 select-none animate-in slide-in-from-right duration-200">
+    <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-80 md:w-96 bg-slate-900/95 backdrop-blur-xl border-l border-white/10 flex flex-col h-full overflow-y-auto p-5 select-none animate-in slide-in-from-right duration-200 shadow-2xl">
       {/* Header */}
       <div className="flex items-start justify-between pb-4 border-b border-white/10">
         <div>

@@ -1,0 +1,18 @@
+{
+  "name": "LifeLens Command",
+  "short_name": "LifeLens",
+  "description": "Operational decision-intelligence platform that maps dependencies, detects cascading risks, and simulates disruptions.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#070A0F",
+  "theme_color": "#070A0F",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/lifelens.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

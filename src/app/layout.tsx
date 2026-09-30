@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth';
 import { LifeLensProvider } from '@/lib/store';
@@ -7,6 +7,24 @@ export const metadata: Metadata = {
   title: 'LifeLens Command — See the consequences before they become problems',
   description:
     'An operational decision-intelligence platform that maps dependencies, detects cascading risks, and simulates hypothetical disruptions in real-time.',
+  manifest: '/manifest.json',
+  icons: {
+    icon: '/lifelens.png',
+    apple: '/lifelens.png',
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'LifeLens Command',
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#070A0F',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({

@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     const depEngine = new DependencyEngine(tasks, dependencies);
 
     const apiKey = process.env.AI_API_KEY;
-    const model = process.env.AI_MODEL || 'gemini-1.5-flash';
+    const model = process.env.AI_MODEL || 'gemini-3.8-flash';
 
     // 1. If external AI API Key is configured, attempt secure external LLM call
     if (apiKey && apiKey.trim().length > 5) {

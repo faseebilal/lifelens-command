@@ -255,7 +255,30 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             return;
           }
         } else {
-          // Supabase not configured in normal mode
+          // Supabase not configured: Load isolated workspace for this authenticated operator
+          if (typeof window !== 'undefined') {
+            const userStorageKey = `lifelens_workspace_${user.id}`;
+            const cachedUserWorkspace = localStorage.getItem(userStorageKey);
+            if (cachedUserWorkspace) {
+              try {
+                const parsed = JSON.parse(cachedUserWorkspace);
+                if (isMounted) {
+                  setProjects(parsed.projects || []);
+                  setTasks(parsed.tasks || []);
+                  setDependencies(parsed.dependencies || []);
+                  setEvents(parsed.events || []);
+                  setSavedSimulations(parsed.savedSimulations || []);
+                  setAiMessages(parsed.aiMessages || []);
+                  setSelectedTaskId(parsed.tasks?.length > 0 ? parsed.tasks[0].id : null);
+                  setIsLoading(false);
+                  return;
+                }
+              } catch (err) {
+                console.error('Operator workspace parse error:', err);
+              }
+            }
+          }
+
           if (isMounted) {
             setProjects([]);
             setTasks([]);
@@ -289,7 +312,7 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, [user, isDemoMode]);
 
-  // Persist ONLY demo state to localStorage (Never normal authenticated production data)
+  // Persist workspace state: Demo Mode to DEMO_STORAGE_KEY, Local Operator to user-specific key
   useEffect(() => {
     if (isLoading || typeof window === 'undefined') return;
 
@@ -309,8 +332,24 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       } catch (err) {
         console.error('Failed to save demo workspace state:', err);
       }
+    } else if (user && user.id && !isSupabaseConfigured()) {
+      try {
+        localStorage.setItem(
+          `lifelens_workspace_${user.id}`,
+          JSON.stringify({
+            projects,
+            tasks,
+            dependencies,
+            events,
+            savedSimulations,
+            aiMessages,
+          })
+        );
+      } catch (err) {
+        console.error('Failed to save operator workspace state:', err);
+      }
     }
-  }, [projects, tasks, dependencies, events, savedSimulations, aiMessages, isLoading, isDemoMode]);
+  }, [projects, tasks, dependencies, events, savedSimulations, aiMessages, isLoading, isDemoMode, user]);
 
   // Dynamic Risk Calculation (Deterministic, transparent)
   const risks = useMemo(() => {
