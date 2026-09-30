@@ -425,6 +425,20 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           throw new Error(`Database error saving project: ${error.message}`);
         }
       }
+
+      // Synchronize notification schedule non-blockingly
+      const currentUserId = user?.id || (isDemoMode ? 'demo-user-id' : 'anonymous-user');
+      fetch('/api/notifications/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId,
+          action: 'PROJECT_CREATED',
+          projectId: newProj.id,
+          deadline: newProj.deadline,
+        }),
+      }).catch(() => {});
+
       return newProj;
     },
     [user, isDemoMode]
@@ -454,6 +468,24 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           throw new Error(`Database error updating project: ${error.message}`);
         }
       }
+
+      // Synchronize notification schedule non-blockingly
+      const currentUserId = user?.id || (isDemoMode ? 'demo-user-id' : 'anonymous-user');
+      fetch('/api/notifications/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId,
+          action:
+            updates.status === 'COMPLETED'
+              ? 'PROJECT_COMPLETED'
+              : updates.deadline
+              ? 'PROJECT_DEADLINE_CHANGED'
+              : 'PROJECT_UPDATED',
+          projectId: id,
+          deadline: updates.deadline,
+        }),
+      }).catch(() => {});
     },
     [projects, user, isDemoMode]
   );
@@ -476,6 +508,18 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           throw new Error(`Database error deleting project: ${error.message}`);
         }
       }
+
+      // Synchronize notification schedule non-blockingly
+      const currentUserId = user?.id || (isDemoMode ? 'demo-user-id' : 'anonymous-user');
+      fetch('/api/notifications/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId,
+          action: 'PROJECT_DELETED',
+          projectId: id,
+        }),
+      }).catch(() => {});
     },
     [projects, tasks, user, isDemoMode]
   );
@@ -510,6 +554,20 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           throw new Error(`Database error saving task: ${error.message}`);
         }
       }
+
+      // Synchronize notification schedule non-blockingly
+      const currentUserId = user?.id || (isDemoMode ? 'demo-user-id' : 'anonymous-user');
+      fetch('/api/notifications/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId,
+          action: 'TASK_CREATED',
+          taskId: newTask.id,
+          deadline: newTask.deadline,
+        }),
+      }).catch(() => {});
+
       return newTask;
     },
     [user, isDemoMode, selectedTaskId]
@@ -539,6 +597,25 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           throw new Error(`Database error updating task: ${error.message}`);
         }
       }
+
+      // Synchronize notification schedule non-blockingly
+      const currentUserId = user?.id || (isDemoMode ? 'demo-user-id' : 'anonymous-user');
+      fetch('/api/notifications/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId,
+          action:
+            updates.status === 'COMPLETED'
+              ? 'TASK_COMPLETED'
+              : updates.deadline
+              ? 'TASK_DEADLINE_CHANGED'
+              : 'TASK_UPDATED',
+          taskId: id,
+          deadline: updates.deadline,
+          status: updates.status,
+        }),
+      }).catch(() => {});
     },
     [tasks, user, isDemoMode]
   );
@@ -567,6 +644,18 @@ export const LifeLensProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           throw new Error(`Database error deleting task: ${error.message}`);
         }
       }
+
+      // Synchronize notification schedule non-blockingly
+      const currentUserId = user?.id || (isDemoMode ? 'demo-user-id' : 'anonymous-user');
+      fetch('/api/notifications/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId,
+          action: 'TASK_DELETED',
+          taskId: id,
+        }),
+      }).catch(() => {});
     },
     [tasks, dependencies, selectedTaskId, user, isDemoMode]
   );
