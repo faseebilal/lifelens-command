@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import {
   Bell,
@@ -17,13 +17,17 @@ import {
   ExternalLink,
   ShieldCheck,
   Zap,
+  RefreshCw,
+  Lock,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import {
   NotificationRecord,
-  isPushNotificationSupported,
-  getNotificationPermission,
+  NotificationStatus,
+  getDetailedNotificationStatus,
   subscribeToPush,
+  verifyAndSyncSubscription,
+  listenToPermissionChanges,
   sendTestNotification,
 } from '@/lib/notifications';
 import { formatRelativeTime, cn } from '@/lib/utils';
@@ -33,24 +37,31 @@ interface NotificationCenterProps {
   onClose: () => void;
 }
 
-export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, onClose }) => {
-  const { user, isDemoMode } = useAuth();
+export const NotificationCenter: React.FC<NotificationCenterProps> = ({
+  isOpen,
+  onClose,
+}) => {
+  const { user } = useAuth();
   const userId = user?.id || 'demo-user-id';
 
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [filter, setFilter] = useState<'ALL' | 'UNREAD'>('ALL');
   const [loading, setLoading] = useState(false);
-  const [pushStatus, setPushStatus] = useState<string>('default');
+  const [notificationStatus, setNotificationStatus] =
+    useState<NotificationStatus>('permission_required');
   const [pushLoading, setPushLoading] = useState(false);
+  const [checkingPushStatus, setCheckingPushStatus] = useState(false);
   const [testNotice, setTestNotice] = useState<string | null>(null);
 
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Load notifications from server or local storage
-  const fetchNotifications = React.useCallback(async () => {
+  const fetchNotifications = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/notifications?userId=${encodeURIComponent(userId)}`);
+      const res = await fetch(
+        `/api/notifications?userId=${encodeURIComponent(userId)}`
+      );
       if (res.ok) {
         const data = await res.json();
         setNotifications(data.notifications || []);
@@ -62,14 +73,57 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
     }
   }, [userId]);
 
+  // Check and refresh notification status
+  const checkStatus = useCallback(
+    async (isManualCheck = false) => {
+      if (typeof window === 'undefined') return;
+      if (isManualCheck) setCheckingPushStatus(true);
+
+      try {
+        const detail = await getDetailedNotificationStatus(userId);
+        if (detail.status === 'blocked') {
+          setNotificationStatus('blocked');
+          if (isManualCheck) {
+            setTestNotice(
+              'Notifications are blocked in your browser settings. Toggle permission to Allow in site settings and check again.'
+            );
+          }
+        } else if (detail.status === 'enabled') {
+          setNotificationStatus('enabled');
+          if (isManualCheck) {
+            setTestNotice('Push notifications are active on this device!');
+          }
+        } else if (detail.status === 'subscription_error') {
+          // Attempt automatic repair
+          const syncRes = await verifyAndSyncSubscription(userId);
+          if (syncRes.success) {
+            setNotificationStatus('enabled');
+          } else {
+            setNotificationStatus('subscription_error');
+          }
+        } else {
+          setNotificationStatus(detail.status);
+        }
+      } catch (err) {
+        console.warn('Notification check error:', err);
+      } finally {
+        if (isManualCheck) setCheckingPushStatus(false);
+      }
+    },
+    [userId]
+  );
+
   useEffect(() => {
     if (isOpen) {
       fetchNotifications();
-      if (typeof window !== 'undefined') {
-        setPushStatus(getNotificationPermission());
-      }
+      checkStatus(false);
+
+      const cleanup = listenToPermissionChanges(() => {
+        checkStatus(false);
+      });
+      return () => cleanup();
     }
-  }, [isOpen, fetchNotifications]);
+  }, [isOpen, fetchNotifications, checkStatus]);
 
   // Close on outside click
   useEffect(() => {
@@ -87,7 +141,9 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
   // Mark single notification as read
   const handleMarkAsRead = async (id: string) => {
     setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read_at: new Date().toISOString() } : n))
+      prev.map((n) =>
+        n.id === id ? { ...n, read_at: new Date().toISOString() } : n
+      )
     );
     try {
       await fetch('/api/notifications', {
@@ -120,9 +176,14 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
   const handleDelete = async (id: string) => {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
     try {
-      await fetch(`/api/notifications?userId=${encodeURIComponent(userId)}&notificationId=${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
+      await fetch(
+        `/api/notifications?userId=${encodeURIComponent(
+          userId
+        )}&notificationId=${encodeURIComponent(id)}`,
+        {
+          method: 'DELETE',
+        }
+      );
     } catch (err) {
       console.error(err);
     }
@@ -132,9 +193,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
   const handleClearAll = async () => {
     setNotifications([]);
     try {
-      await fetch(`/api/notifications?userId=${encodeURIComponent(userId)}`, {
-        method: 'DELETE',
-      });
+      await fetch(
+        `/api/notifications?userId=${encodeURIComponent(userId)}`,
+        {
+          method: 'DELETE',
+        }
+      );
     } catch (err) {
       console.error(err);
     }
@@ -142,21 +206,35 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
 
   // Enable Browser Web Push Notifications
   const handleEnablePush = async () => {
+    if (notificationStatus === 'blocked') {
+      setTestNotice(
+        'Notifications are blocked in your browser. Click the lock/tune icon next to the URL, change Notifications to Allow, and click Check Notification Status.'
+      );
+      return;
+    }
+
     setPushLoading(true);
     setTestNotice(null);
     const res = await subscribeToPush(userId);
     setPushLoading(false);
 
     if (res.success) {
-      setPushStatus('granted');
-      setTestNotice('Web Push Notifications successfully enabled! Sending a test alert...');
-      // Trigger a test alert
+      setNotificationStatus('enabled');
+      setTestNotice(
+        'Web Push Notifications successfully enabled! Dispatching a test alert...'
+      );
       await sendTestNotification(userId);
       fetchNotifications();
       setTimeout(() => setTestNotice(null), 5000);
     } else {
-      setPushStatus(getNotificationPermission());
-      setTestNotice(res.error || 'Failed to enable push notifications.');
+      setNotificationStatus(res.status);
+      if (res.status === 'blocked') {
+        setTestNotice(
+          'Notifications are blocked in your browser settings. Toggle permission to Allow in your browser site settings.'
+        );
+      } else {
+        setTestNotice(res.error || 'Failed to complete push subscription.');
+      }
       setTimeout(() => setTestNotice(null), 6000);
     }
   };
@@ -165,7 +243,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
   const handleSendTestAlert = async () => {
     setTestNotice('Dispatching real Web Push alert...');
     const res = await sendTestNotification(userId);
-    setTestNotice(res.message || (res.success ? 'Notification dispatched!' : res.error || 'Test failed.'));
+    setTestNotice(
+      res.message ||
+        (res.success
+          ? 'Notification dispatched!'
+          : res.error || 'Test failed.')
+    );
     fetchNotifications();
     setTimeout(() => setTestNotice(null), 5000);
   };
@@ -174,7 +257,9 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
 
   const unreadCount = notifications.filter((n) => !n.read_at).length;
   const filteredList =
-    filter === 'UNREAD' ? notifications.filter((n) => !n.read_at) : notifications;
+    filter === 'UNREAD'
+      ? notifications.filter((n) => !n.read_at)
+      : notifications;
 
   const getNotificationIcon = (type: string) => {
     switch (type) {
@@ -227,8 +312,45 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
           </button>
         </div>
 
-        {/* Web Push Banner (If not yet enabled) */}
-        {pushStatus !== 'granted' && (
+        {/* Web Push Banner: Blocked in Browser */}
+        {notificationStatus === 'blocked' && (
+          <div className="p-3.5 m-3 rounded-xl bg-amber-950/40 border border-amber-500/30 space-y-2 animate-in fade-in duration-150">
+            <div className="flex items-start gap-2.5">
+              <Lock className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="text-xs">
+                <span className="font-semibold text-white block">
+                  Notifications are blocked in your browser
+                </span>
+                <p className="text-[11px] text-slate-300 leading-snug mt-0.5">
+                  To receive deadline alerts when LifeLens Command is closed, click the lock/tune icon next to the address bar and change Notifications to <strong className="text-emerald-300">Allow</strong>.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1 flex-wrap">
+              <button
+                onClick={() => checkStatus(true)}
+                disabled={checkingPushStatus}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[11px] transition-colors flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3 h-3 ${checkingPushStatus ? 'animate-spin' : ''}`} />
+                <span>{checkingPushStatus ? 'Checking...' : 'Check Notification Status'}</span>
+              </button>
+
+              <Link
+                href="/settings#notifications"
+                onClick={onClose}
+                className="text-[11px] text-cyan-400 hover:underline flex items-center gap-0.5"
+              >
+                <span>How to unblock</span>
+                <ArrowRight className="w-3 h-3" />
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Web Push Banner: Permission Required */}
+        {notificationStatus === 'permission_required' && (
           <div className="p-3.5 m-3 rounded-xl bg-gradient-to-r from-cyan-950/60 via-blue-950/40 to-transparent border border-cyan-500/30 space-y-2">
             <div className="flex items-start gap-2.5">
               <Zap className="w-4 h-4 text-cyan-400 flex-shrink-0 mt-0.5 animate-pulse" />
@@ -248,19 +370,51 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
                 disabled={pushLoading}
                 className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-[11px] transition-colors disabled:opacity-50 flex items-center gap-1 shadow-[0_0_10px_rgba(0,229,255,0.3)]"
               >
-                <span>{pushLoading ? 'Subscribing...' : 'Enable Notifications'}</span>
+                <span>{pushLoading ? 'Prompting...' : 'Enable Notifications'}</span>
               </button>
               <span className="text-[10px] text-slate-400 font-mono">
-                {pushStatus === 'denied' ? 'Permission Denied in Browser' : 'Standard Web Push'}
+                Standard Web Push
               </span>
             </div>
           </div>
         )}
 
-        {/* Test Notice message */}
+        {/* Web Push Banner: Subscription Error */}
+        {notificationStatus === 'subscription_error' && (
+          <div className="p-3.5 m-3 rounded-xl bg-red-950/40 border border-red-500/30 space-y-2">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="text-xs">
+                <span className="font-semibold text-white block">
+                  Push Subscription Needs Repair
+                </span>
+                <p className="text-[11px] text-slate-300 leading-snug mt-0.5">
+                  Permission is granted, but push registration needs to be re-synchronized.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={handleEnablePush}
+              disabled={pushLoading}
+              className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-[11px] transition-colors flex items-center gap-1"
+            >
+              <RefreshCw className={`w-3 h-3 ${pushLoading ? 'animate-spin' : ''}`} />
+              <span>{pushLoading ? 'Repairing...' : 'Repair Push Subscription'}</span>
+            </button>
+          </div>
+        )}
+
+        {/* Notice message */}
         {testNotice && (
-          <div className="mx-3 p-2.5 rounded-xl bg-cyan-950/80 border border-cyan-500/40 text-cyan-200 text-xs">
-            {testNotice}
+          <div className="mx-3 p-2.5 rounded-xl bg-slate-900 border border-white/10 text-cyan-200 text-xs flex items-center justify-between">
+            <span>{testNotice}</span>
+            <button
+              onClick={() => setTestNotice(null)}
+              className="text-slate-400 hover:text-white p-0.5"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
 
@@ -344,7 +498,13 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
           ) : (
             filteredList.map((notif) => {
               const isUnread = !notif.read_at;
-              const linkUrl = notif.payload?.url || (notif.task_id ? '/tasks' : notif.project_id ? '/projects' : '/dashboard');
+              const linkUrl =
+                notif.payload?.url ||
+                (notif.task_id
+                  ? '/tasks'
+                  : notif.project_id
+                  ? '/projects'
+                  : '/dashboard');
 
               return (
                 <div
@@ -363,7 +523,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
 
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-1 mb-0.5">
-                        <h4 className={cn('text-xs font-bold truncate', isUnread ? 'text-white' : 'text-slate-300')}>
+                        <h4
+                          className={cn(
+                            'text-xs font-bold truncate',
+                            isUnread ? 'text-white' : 'text-slate-300'
+                          )}
+                        >
                           {notif.title}
                         </h4>
                         {isUnread && (
@@ -376,7 +541,11 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, 
                       </p>
 
                       <div className="flex items-center justify-between mt-2 pt-1 text-[10px] text-slate-500 border-t border-white/5">
-                        <span>{formatRelativeTime(notif.scheduled_for || notif.created_at)}</span>
+                        <span>
+                          {formatRelativeTime(
+                            notif.scheduled_for || notif.created_at
+                          )}
+                        </span>
 
                         <div className="flex items-center gap-2">
                           <Link

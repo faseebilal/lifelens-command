@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { Card, CardHeader } from '@/components/common/Card';
 import { useLifeLens } from '@/lib/store';
@@ -23,12 +23,22 @@ import {
   Globe,
   Sliders,
   Sparkles,
+  HelpCircle,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+  XCircle,
+  Lock,
 } from 'lucide-react';
 import {
-  isPushNotificationSupported,
+  NotificationStatus,
   getNotificationPermission,
+  getDetailedNotificationStatus,
   subscribeToPush,
   unsubscribeFromPush,
+  verifyAndSyncSubscription,
+  listenToPermissionChanges,
   sendTestNotification,
   NotificationPreferences,
 } from '@/lib/notifications';
@@ -42,9 +52,15 @@ export default function SettingsPage() {
   const [prefNotice, setPrefNotice] = useState<string | null>(null);
 
   // Push & Notification Settings State
-  const [pushSupported, setPushSupported] = useState(false);
-  const [pushPermission, setPushPermission] = useState<string>('default');
+  const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>('permission_required');
+  const [pushPermission, setPushPermission] = useState<NotificationPermission | 'unsupported'>('default');
   const [pushLoading, setPushLoading] = useState(false);
+  const [checkingPushStatus, setCheckingPushStatus] = useState(false);
+  const [showUnblockGuide, setShowUnblockGuide] = useState(false);
+  const [pushNotice, setPushNotice] = useState<{
+    type: 'success' | 'info' | 'error';
+    message: string;
+  } | null>(null);
 
   const [preferences, setPreferences] = useState<NotificationPreferences>({
     user_id: userId,
@@ -60,18 +76,101 @@ export default function SettingsPage() {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   });
 
-  // Check push support on mount
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const supported = isPushNotificationSupported();
-      setPushSupported(supported);
-      if (supported) {
-        setPushPermission(getNotificationPermission());
-      }
-    }
-  }, []);
+  // Verify and sync push subscription state
+  const refreshNotificationStatus = useCallback(
+    async (isManualCheck = false) => {
+      if (typeof window === 'undefined') return;
 
-  // Load preferences from API or local storage
+      if (isManualCheck) {
+        setCheckingPushStatus(true);
+      }
+
+      try {
+        const detail = await getDetailedNotificationStatus(userId);
+        setPushPermission(detail.permission);
+
+        if (detail.status === 'unsupported') {
+          setNotificationStatus('unsupported');
+          if (isManualCheck) {
+            setPushNotice({
+              type: 'info',
+              message: 'Web Push Notifications are not supported by this browser engine.',
+            });
+          }
+          return;
+        }
+
+        if (detail.status === 'blocked') {
+          setNotificationStatus('blocked');
+          setShowUnblockGuide(true);
+          if (isManualCheck) {
+            setPushNotice({
+              type: 'info',
+              message:
+                'Notifications are blocked in your browser settings. Follow the steps below to change permission to Allow, then click Check Notification Status.',
+            });
+          }
+          return;
+        }
+
+        if (detail.status === 'permission_required') {
+          setNotificationStatus('permission_required');
+          setShowUnblockGuide(false);
+          if (isManualCheck) {
+            setPushNotice({
+              type: 'info',
+              message: 'Browser permission is in default state. Click "Enable Notifications" below to activate.',
+            });
+          }
+          return;
+        }
+
+        // Permission is granted: automatically verify service worker, PushSubscription, and Supabase sync
+        const syncResult = await verifyAndSyncSubscription(userId);
+
+        if (syncResult.success) {
+          setNotificationStatus('enabled');
+          setPreferences((prev) => ({ ...prev, push_enabled: true }));
+          setShowUnblockGuide(false);
+          if (isManualCheck) {
+            setPushNotice({
+              type: 'success',
+              message: 'Notification status verified: Real Web Push is active and connected to Supabase!',
+            });
+          }
+        } else {
+          setNotificationStatus('subscription_error');
+          if (isManualCheck) {
+            setPushNotice({
+              type: 'error',
+              message: syncResult.error || 'Push subscription could not be established.',
+            });
+          }
+        }
+      } catch (err: any) {
+        console.warn('Status verification notice:', err);
+      } finally {
+        if (isManualCheck) {
+          setCheckingPushStatus(false);
+        }
+      }
+    },
+    [userId]
+  );
+
+  // Check push support and register permission change listener on mount
+  useEffect(() => {
+    refreshNotificationStatus(false);
+
+    // Listen to real-time browser permission changes (e.g. user toggling site settings icon in URL bar)
+    const cleanup = listenToPermissionChanges(() => {
+      refreshNotificationStatus(false);
+    });
+
+    return () => cleanup();
+  }, [refreshNotificationStatus]);
+
+  // Load preferences from API
   useEffect(() => {
     const loadPrefs = async () => {
       try {
@@ -113,41 +212,90 @@ export default function SettingsPage() {
     }
   };
 
-  // Toggle Web Push
-  const handleTogglePush = async () => {
+  // Enable Notifications Action
+  const handleEnablePush = async () => {
+    // If permission is denied, do not repeatedly call requestPermission()
+    if (notificationStatus === 'blocked') {
+      setShowUnblockGuide(true);
+      setPushNotice({
+        type: 'info',
+        message:
+          'Notifications are currently blocked in your browser. Follow the step-by-step guide below to toggle permission to Allow.',
+      });
+      return;
+    }
+
     setPushLoading(true);
-    setPrefNotice(null);
+    setPushNotice(null);
 
-    if (!preferences.push_enabled) {
-      // Enable Push
-      const res = await subscribeToPush(userId);
-      setPushLoading(false);
+    const res = await subscribeToPush(userId);
+    setPushLoading(false);
 
-      if (res.success) {
-        setPreferences((prev) => ({ ...prev, push_enabled: true }));
-        setPushPermission('granted');
-        setPrefNotice('Push notifications enabled! Triggering test alert...');
-        await sendTestNotification(userId);
-        setTimeout(() => setPrefNotice(null), 5000);
-      } else {
-        setPushPermission(getNotificationPermission());
-        setPrefNotice(res.error || 'Failed to enable push notifications.');
-      }
+    if (res.success) {
+      setNotificationStatus('enabled');
+      setPushPermission('granted');
+      setPreferences((prev) => ({ ...prev, push_enabled: true }));
+      setPushNotice({
+        type: 'success',
+        message: 'Web Push Notifications successfully enabled! Dispatching a test alert...',
+      });
+      await sendTestNotification(userId);
+      setTimeout(() => setPushNotice(null), 6000);
     } else {
-      // Disable Push
-      await unsubscribeFromPush(userId);
-      setPushLoading(false);
-      setPreferences((prev) => ({ ...prev, push_enabled: false }));
-      setPrefNotice('Push notifications disabled on this device.');
-      setTimeout(() => setPrefNotice(null), 4000);
+      setPushPermission(getNotificationPermission());
+      setNotificationStatus(res.status);
+
+      if (res.status === 'blocked') {
+        setShowUnblockGuide(true);
+        setPushNotice({
+          type: 'info',
+          message:
+            'Notifications were blocked in your browser. LifeLens Command will continue functioning normally. To enable push alerts, follow the steps below.',
+        });
+      } else if (res.status === 'permission_required') {
+        setPushNotice({
+          type: 'info',
+          message: 'Permission prompt was dismissed. Click "Enable Notifications" whenever you are ready.',
+        });
+      } else {
+        setPushNotice({
+          type: 'error',
+          message: res.error || 'Failed to complete push notification setup.',
+        });
+      }
     }
   };
 
+  // Disable Notifications Action
+  const handleDisablePush = async () => {
+    setPushLoading(true);
+    await unsubscribeFromPush(userId);
+    setPushLoading(false);
+    setPreferences((prev) => ({ ...prev, push_enabled: false }));
+    setNotificationStatus('permission_required');
+    setPushNotice({
+      type: 'info',
+      message: 'Push notifications have been disabled on this browser.',
+    });
+    setTimeout(() => setPushNotice(null), 4000);
+  };
+
+  // Send Test Push
   const handleSendTestPush = async () => {
-    setPrefNotice('Sending test Web Push notification...');
+    setPushNotice({ type: 'info', message: 'Dispatching test Web Push alert...' });
     const res = await sendTestNotification(userId);
-    setPrefNotice(res.message || (res.success ? 'Test notification sent!' : res.error || 'Failed to send test.'));
-    setTimeout(() => setPrefNotice(null), 5000);
+    if (res.success) {
+      setPushNotice({
+        type: 'success',
+        message: res.message || 'Test notification sent to your registered device!',
+      });
+    } else {
+      setPushNotice({
+        type: 'error',
+        message: res.error || 'Failed to dispatch test notification.',
+      });
+    }
+    setTimeout(() => setPushNotice(null), 6000);
   };
 
   const handleExportState = () => {
@@ -197,6 +345,55 @@ export default function SettingsPage() {
     ? 'demo@lifelens.io'
     : user?.email || 'authenticated@user';
 
+  // Badge configuration based on actual browser state
+  const getStatusBadgeConfig = () => {
+    switch (notificationStatus) {
+      case 'enabled':
+        return {
+          label: 'NOTIFICATIONS ENABLED',
+          badgeClass: 'bg-emerald-950/80 text-emerald-400 border-emerald-500/40',
+          dotClass: 'bg-emerald-400 shadow-[0_0_8px_#34D399]',
+          description:
+            'Browser push notifications are active. You will receive deadline alerts even when LifeLens Command is closed.',
+        };
+      case 'blocked':
+        return {
+          label: 'NOTIFICATIONS BLOCKED',
+          badgeClass: 'bg-amber-950/80 text-amber-400 border-amber-500/40',
+          dotClass: 'bg-amber-400 shadow-[0_0_8px_#FBBF24]',
+          description:
+            'Notifications are blocked in your browser settings. LifeLens Command will operate normally, but background push alerts require permission.',
+        };
+      case 'permission_required':
+        return {
+          label: 'PERMISSION REQUIRED',
+          badgeClass: 'bg-cyan-950/80 text-cyan-400 border-cyan-500/40',
+          dotClass: 'bg-cyan-400 shadow-[0_0_8px_#00E5FF]',
+          description:
+            'Browser notification permission has not been requested yet. Click Enable Notifications to activate background alerts.',
+        };
+      case 'subscription_error':
+        return {
+          label: 'SUBSCRIPTION ERROR',
+          badgeClass: 'bg-red-950/80 text-red-400 border-red-500/40',
+          dotClass: 'bg-red-400 shadow-[0_0_8px_#EF4444]',
+          description:
+            'Permission is granted, but push registration needs repair. Click Repair Subscription to re-synchronize with the server.',
+        };
+      case 'unsupported':
+      default:
+        return {
+          label: 'UNSUPPORTED BROWSER',
+          badgeClass: 'bg-slate-800 text-slate-400 border-slate-700',
+          dotClass: 'bg-slate-500',
+          description:
+            'Web Push API is not supported on this browser engine. In-app notifications will continue to work normally in the notification center.',
+        };
+    }
+  };
+
+  const statusConfig = getStatusBadgeConfig();
+
   return (
     <AppLayout>
       <div className="space-y-6 max-w-4xl">
@@ -245,61 +442,216 @@ export default function SettingsPage() {
                     <span className="text-[11px] text-slate-400 block mt-0.5">
                       Receive alerts on your phone or desktop even when LifeLens Command is closed.
                     </span>
+
+                    {/* Accurate Real-Time Device Status */}
                     <div className="flex items-center gap-2 mt-2">
                       <span className="text-[10px] font-mono text-slate-400">Device Status:</span>
                       <span
-                        className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
-                          !pushSupported
-                            ? 'bg-slate-800 text-slate-400 border-slate-700'
-                            : pushPermission === 'granted'
-                            ? 'bg-emerald-950 text-emerald-400 border-emerald-500/40'
-                            : pushPermission === 'denied'
-                            ? 'bg-red-950 text-red-400 border-red-500/40'
-                            : 'bg-amber-950 text-amber-400 border-amber-500/40'
-                        }`}
+                        className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 ${statusConfig.badgeClass}`}
                       >
-                        {!pushSupported
-                          ? 'UNSUPPORTED BROWSER'
-                          : pushPermission === 'granted'
-                          ? 'PUSH ENABLED / GRANTED'
-                          : pushPermission === 'denied'
-                          ? 'BLOCKED IN BROWSER'
-                          : 'PENDING PERMISSION'}
+                        <span className={`w-1.5 h-1.5 rounded-full ${statusConfig.dotClass}`} />
+                        <span>{statusConfig.label}</span>
                       </span>
                     </div>
+
+                    <p className="text-[11px] text-slate-400 mt-2 max-w-xl leading-relaxed">
+                      {statusConfig.description}
+                    </p>
                   </div>
 
+                  {/* Dynamic Action Buttons Based on Permission State */}
                   <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={handleTogglePush}
-                      disabled={pushLoading || !pushSupported}
-                      className={`px-4 py-2 rounded-xl font-bold text-xs transition-all shadow-lg flex items-center gap-1.5 ${
-                        preferences.push_enabled && pushPermission === 'granted'
-                          ? 'bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40'
-                          : 'bg-cyan-500 hover:bg-cyan-400 text-black shadow-[0_0_15px_rgba(0,229,255,0.3)]'
-                      } disabled:opacity-50`}
-                    >
-                      <Zap className="w-3.5 h-3.5" />
-                      <span>
-                        {pushLoading
-                          ? 'Processing...'
-                          : preferences.push_enabled && pushPermission === 'granted'
-                          ? 'Disable Push'
-                          : 'Enable Notifications'}
-                      </span>
-                    </button>
+                    {notificationStatus === 'enabled' ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleDisablePush}
+                          disabled={pushLoading}
+                          className="px-3.5 py-2 rounded-xl font-bold text-xs bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 transition-all disabled:opacity-50"
+                        >
+                          {pushLoading ? 'Disabling...' : 'Disable Push'}
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={handleSendTestPush}
-                      className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-cyan-300 border border-white/10 text-xs font-semibold transition-colors"
-                      title="Send test push notification"
-                    >
-                      Send Test Alert
-                    </button>
+                        <button
+                          type="button"
+                          onClick={handleSendTestPush}
+                          className="px-3 py-2 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-xs font-semibold transition-colors flex items-center gap-1"
+                          title="Send test push notification"
+                        >
+                          <Zap className="w-3.5 h-3.5" />
+                          <span>Send Test Alert</span>
+                        </button>
+                      </>
+                    ) : notificationStatus === 'blocked' ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => refreshNotificationStatus(true)}
+                          disabled={checkingPushStatus}
+                          className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs transition-all shadow-[0_0_15px_rgba(245,158,11,0.3)] flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${checkingPushStatus ? 'animate-spin' : ''}`} />
+                          <span>{checkingPushStatus ? 'Checking...' : 'Check Notification Status'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setShowUnblockGuide(!showUnblockGuide)}
+                          className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 text-xs font-medium transition-colors flex items-center gap-1"
+                        >
+                          <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+                          <span>{showUnblockGuide ? 'Hide Instructions' : 'How to Unblock'}</span>
+                        </button>
+                      </>
+                    ) : notificationStatus === 'subscription_error' ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleEnablePush}
+                          disabled={pushLoading}
+                          className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.3)] disabled:opacity-50 flex items-center gap-1.5"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${pushLoading ? 'animate-spin' : ''}`} />
+                          <span>{pushLoading ? 'Repairing...' : 'Repair Push Subscription'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => refreshNotificationStatus(true)}
+                          disabled={checkingPushStatus}
+                          className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 text-xs font-medium transition-colors"
+                        >
+                          <span>Check Status</span>
+                        </button>
+                      </>
+                    ) : notificationStatus === 'permission_required' ? (
+                      <button
+                        type="button"
+                        onClick={handleEnablePush}
+                        disabled={pushLoading}
+                        className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-extrabold text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.3)] disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        <Zap className="w-3.5 h-3.5" />
+                        <span>{pushLoading ? 'Prompting...' : 'Enable Notifications'}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        className="px-3 py-2 rounded-xl bg-slate-800 text-slate-500 border border-slate-700 text-xs font-medium cursor-not-allowed"
+                      >
+                        Unsupported on Browser
+                      </button>
+                    )}
+
+                    {notificationStatus !== 'blocked' && (
+                      <button
+                        type="button"
+                        onClick={() => refreshNotificationStatus(true)}
+                        disabled={checkingPushStatus}
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 transition-colors"
+                        title="Re-check browser notification permission"
+                        aria-label="Refresh notification status"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${checkingPushStatus ? 'animate-spin' : ''}`} />
+                      </button>
+                    )}
                   </div>
                 </div>
+
+                {/* Status Notice Feedback */}
+                {pushNotice && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs flex items-start gap-2 animate-in fade-in duration-150 ${
+                      pushNotice.type === 'success'
+                        ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
+                        : pushNotice.type === 'error'
+                        ? 'bg-red-950/80 border-red-500/40 text-red-300'
+                        : 'bg-cyan-950/80 border-cyan-500/40 text-cyan-200'
+                    }`}
+                  >
+                    {pushNotice.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                    ) : pushNotice.type === 'error' ? (
+                      <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                    ) : (
+                      <HelpCircle className="w-4 h-4 text-cyan-400 flex-shrink-0 mt-0.5" />
+                    )}
+                    <div className="flex-1">
+                      <span>{pushNotice.message}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Clear Step-by-Step Unblock Guide for Android Chrome and Desktop Chrome */}
+                {showUnblockGuide && notificationStatus === 'blocked' && (
+                  <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-500/30 space-y-3 animate-in fade-in duration-200">
+                    <div className="flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-amber-400" />
+                      <span className="font-bold text-white text-xs">
+                        How to Unblock Notifications in Your Browser
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      Your browser currently has notifications set to &quot;Block&quot; for this website. Because of browser security, websites cannot automatically overturn a blocked setting. Follow these quick steps to allow alerts:
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1 text-xs">
+                      {/* Desktop Instructions */}
+                      <div className="p-3 rounded-lg bg-black/40 border border-white/10 space-y-1.5">
+                        <span className="font-bold text-cyan-300 block text-[11px]">
+                          💻 Desktop Chrome / Edge / Brave
+                        </span>
+                        <ol className="list-decimal list-inside text-[11px] text-slate-300 space-y-1 pl-1">
+                          <li>
+                            Click the <strong className="text-white">site settings icon</strong> (tune 🎛️ or lock 🔒) to the left of the URL in the address bar.
+                          </li>
+                          <li>
+                            Find <strong className="text-white">Notifications</strong> and toggle it from <span className="text-amber-300">Block</span> to <span className="text-emerald-300">Allow</span>.
+                          </li>
+                          <li>
+                            Return here and click <strong className="text-white">Check Notification Status</strong> below.
+                          </li>
+                        </ol>
+                      </div>
+
+                      {/* Android / Mobile Instructions */}
+                      <div className="p-3 rounded-lg bg-black/40 border border-white/10 space-y-1.5">
+                        <span className="font-bold text-purple-300 block text-[11px]">
+                          📱 Android Chrome / Mobile Browser
+                        </span>
+                        <ol className="list-decimal list-inside text-[11px] text-slate-300 space-y-1 pl-1">
+                          <li>
+                            Tap the <strong className="text-white">tune / lock icon</strong> next to the web address or Chrome menu (⋮) $\rightarrow$ <strong className="text-white">Permissions</strong>.
+                          </li>
+                          <li>
+                            Tap <strong className="text-white">Notifications</strong> and switch to <span className="text-emerald-300">Allow</span>.
+                          </li>
+                          <li>
+                            Tap <strong className="text-white">Check Notification Status</strong> below to start receiving alerts.
+                          </li>
+                        </ol>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex items-center justify-between flex-wrap gap-2 border-t border-white/5">
+                      <span className="text-[10px] text-slate-400">
+                        LifeLens Command remains completely functional in your browser even if notifications are blocked.
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => refreshNotificationStatus(true)}
+                        disabled={checkingPushStatus}
+                        className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-[11px] transition-colors flex items-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${checkingPushStatus ? 'animate-spin' : ''}`} />
+                        <span>Check Notification Status Now</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Notification Categories Grid */}
@@ -307,7 +659,7 @@ export default function SettingsPage() {
                 {/* Task Deadlines */}
                 <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="font-semibold text-white flex items-center gap-1.5">
+                    <label className="font-semibold text-white flex items-center gap-1.5 cursor-pointer">
                       <Clock className="w-3.5 h-3.5 text-cyan-400" />
                       <span>Task Deadline Alerts</span>
                     </label>
@@ -328,7 +680,7 @@ export default function SettingsPage() {
                 {/* Overdue Task Alerts */}
                 <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="font-semibold text-white flex items-center gap-1.5">
+                    <label className="font-semibold text-white flex items-center gap-1.5 cursor-pointer">
                       <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
                       <span>Overdue Task Notifications</span>
                     </label>
@@ -349,7 +701,7 @@ export default function SettingsPage() {
                 {/* Project Deadlines */}
                 <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="font-semibold text-white flex items-center gap-1.5">
+                    <label className="font-semibold text-white flex items-center gap-1.5 cursor-pointer">
                       <Calendar className="w-3.5 h-3.5 text-purple-400" />
                       <span>Project Milestone Alerts</span>
                     </label>
@@ -370,7 +722,7 @@ export default function SettingsPage() {
                 {/* Calendar Collision Reminders */}
                 <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="font-semibold text-white flex items-center gap-1.5">
+                    <label className="font-semibold text-white flex items-center gap-1.5 cursor-pointer">
                       <Sliders className="w-3.5 h-3.5 text-amber-400" />
                       <span>Schedule Conflict Reminders</span>
                     </label>
@@ -481,7 +833,7 @@ export default function SettingsPage() {
 
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-slate-300 font-medium flex items-center gap-1.5">
+                    <label className="text-slate-300 font-medium flex items-center gap-1.5 cursor-pointer">
                       <Sparkles className="w-3.5 h-3.5 text-amber-400" />
                       <span>Daily Morning Summary</span>
                     </label>
