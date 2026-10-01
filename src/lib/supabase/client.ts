@@ -2,24 +2,31 @@ import { createBrowserClient } from '@supabase/ssr';
 import { createClient as createJsClient, SupabaseClient } from '@supabase/supabase-js';
 
 export const getSupabaseUrl = (): string => {
-  return (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  if (!url) {
+    throw new Error('Supabase Configuration Error: NEXT_PUBLIC_SUPABASE_URL is missing. Please configure NEXT_PUBLIC_SUPABASE_URL.');
+  }
+  return url;
 };
 
-export const getSupabaseAnonKey = (): string => {
-  return (
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    ''
-  ).trim();
+export const getSupabasePublishableKey = (): string => {
+  const key = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '').trim();
+  if (!key) {
+    throw new Error('Supabase Configuration Error: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is missing. Please configure NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY.');
+  }
+  return key;
 };
+
+// Backwards-compatibility alias for server/middleware helpers
+export const getSupabaseAnonKey = getSupabasePublishableKey;
 
 /**
  * Validates whether real, production-ready Supabase credentials are configured.
- * Rejects default placeholders like 'your-project.supabase.co' or 'demo-anon-key'.
+ * Rejects default placeholders like 'your-project.supabase.co' or 'placeholder'.
  */
 export const isSupabaseConfigured = (): boolean => {
-  const url = getSupabaseUrl();
-  const key = getSupabaseAnonKey();
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const key = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '').trim();
   if (!url || !key) return false;
 
   const urlLower = url.toLowerCase();
@@ -37,9 +44,7 @@ export const isSupabaseConfigured = (): boolean => {
   }
 
   if (
-    keyLower.includes('your-anon-key') ||
     keyLower.includes('your-publishable-key') ||
-    keyLower.includes('demo-anon-key') ||
     keyLower.includes('placeholder') ||
     keyLower.length < 20
   ) {
@@ -51,7 +56,7 @@ export const isSupabaseConfigured = (): boolean => {
 
 // Return host without exposing secrets
 export function getSupabaseHost(): string {
-  const url = getSupabaseUrl();
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
   if (!url) return 'Not configured';
   try {
     const parsed = new URL(url);
@@ -61,20 +66,49 @@ export function getSupabaseHost(): string {
   }
 }
 
-// Safe fallback URL and Key for client initialization without triggering network errors
-const safeUrl = isSupabaseConfigured() ? getSupabaseUrl() : 'https://placeholder.supabase.co';
-const safeAnonKey = isSupabaseConfigured() ? getSupabaseAnonKey() : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.placeholder';
-
 /**
- * Modern Supabase Client using @supabase/ssr createBrowserClient for browser environment
- * Ensures cookie-backed sessions with SameSite=Lax and seamless Next.js SSR compatibility
+ * Initialize the browser Supabase client using ONLY:
+ * - NEXT_PUBLIC_SUPABASE_URL
+ * - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ * Fails clearly if either required environment variable is missing.
  */
+function initBrowserClient(): SupabaseClient {
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const key = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '').trim();
+
+  if (!url) {
+    throw new Error('Supabase Configuration Error: NEXT_PUBLIC_SUPABASE_URL is missing. The browser Supabase client cannot be initialized.');
+  }
+  if (!key) {
+    throw new Error('Supabase Configuration Error: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is missing. The browser Supabase client cannot be initialized.');
+  }
+
+  return createBrowserClient(url, key);
+}
+
+function initServerJsClient(): SupabaseClient {
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const key = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '').trim();
+
+  if (!url || !key) {
+    return new Proxy({} as SupabaseClient, {
+      get(_target, prop) {
+        throw new Error(
+          `Supabase Configuration Error: Cannot access "${String(prop)}" because ${!url ? 'NEXT_PUBLIC_SUPABASE_URL' : 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'} is missing.`
+        );
+      },
+    });
+  }
+
+  return createJsClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
 export const supabase: SupabaseClient =
   typeof window !== 'undefined'
-    ? createBrowserClient(safeUrl, safeAnonKey)
-    : createJsClient(safeUrl, safeAnonKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
-      });
+    ? initBrowserClient()
+    : initServerJsClient();
